@@ -1,11 +1,22 @@
+import argparse
 import logging
+import os
 import sys
 from enum import Enum
 try:
 	import cv2 as cv
 	import numpy as np
 except:
-	print("run python3 -m pip install --user numpy opencv-contrib-python")
+	print("Could not import dependencies." +
+	      "Make sure you have them installed")
+	print("Either do -")
+	print("python -m pip install --user numpy opencv-contrib-python")
+	print(f"python {' '.join(sys.argv)}")
+	print("OR")
+	print("python -m pip install poetry")
+	print("poetry install")
+	print(f"poetry run python {' '.join(sys.argv)}")
+	sys.exit()
 
 dbg = logging.debug
 err = logging.error
@@ -33,7 +44,7 @@ TEXT_TO_ROWS_RATIO = 0.4
 # Binarization Thresholds
 K1, K2, K3 = 50, 178, 229
 
-# Color thresholds
+# Intensity thresholds for black, gray and white pixels
 B0, B1, G0, G1, W0, W1 = 0, 0, 0, 0, 0, 0
 ########## END CONFIG ##########
 
@@ -52,11 +63,11 @@ class ImageType(Enum):
 def open_image(filename):
 	img = cv.imread(filename)
 	if img is None:
-		warn(f"{filename} not found")
+		warn(f"'{filename}' not found")
 		return None
 	rows, cols = img.shape[:2]
 	if rows < MIN_DIMENSIONS[0] or cols < MIN_DIMENSIONS[1]:
-		warn(f"{filename} does not have enough rows/columns")
+		warn(f"'{filename}' does not have enough rows/columns")
 		return None
 	dbg(f"Image has {rows} rows and {cols} columns")
 	return img
@@ -64,28 +75,27 @@ def open_image(filename):
 
 def save_image(img_name, img):
 	cv.imwrite(img_name, img)
-	dbg(f"Deskewed image saved as {img_name}")
+	dbg(f"Deskewed image saved as '{img_name}'")
 
 
 def classify_image_type(img):
 	rows, cols = img.shape[:2]
 	text_lines = 0
-	total_lines = rows / STEP_LENGTH
-	for k in range(0, rows, STEP_LENGTH):
+	dbg(f"Using Step length of {STEP_LENGTH} pixels")
+	total_lines = rows // STEP_LENGTH
+	for i in range(0, rows, STEP_LENGTH):
 		black_acc, gray_acc, white_acc = 0, 0, 0
-		for i in range(k, min(k + STEP_LENGTH, rows)):
-			for j in range(cols):
-				pixel = img[i][j]
-				if pixel >= B0 and pixel <= B1:
-					black_acc += 1
-				elif pixel >= G0 and pixel <= G1:
-					gray_acc += 1
-				elif pixel >= W0 and pixel <= W1:
-					white_acc += 1
+		for pixel in img[i]:
+			if B0 <= pixel <= B1:
+				black_acc += 1
+			elif G0 <= pixel <= G1:
+				gray_acc += 1
+			elif W0 <= pixel <= W1:
+				white_acc += 1
 		if white_acc != 0 and (black_acc +
 		                       gray_acc) / white_acc >= BLACK_TO_WHITE_RATIO:
 			text_lines += 1
-	dbg("Found {text_lines} text segments out of {total_lines} total segments")
+	dbg(f"Found {text_lines} text rows out of {total_lines} traversal rows")
 	if text_lines / total_lines >= TEXT_TO_ROWS_RATIO:
 		return ImageType.TEXT
 	return ImageType.NON_TEXT
@@ -93,7 +103,7 @@ def classify_image_type(img):
 
 # todo
 def classify_edge_type(img):
-	pass
+	return EdgeType.BLACK
 
 
 def binarize(img, threshold):
@@ -102,22 +112,33 @@ def binarize(img, threshold):
 
 #todo
 def estimate_skew_angle(img):
-	pass
+	return 10
+
+
+def deskew(img, skew_angle):
+	(h, w) = img.shape[:2]
+	# Maybe it would be better to get centroid of page instead of image center
+	center = (w // 2, h // 2)
+	return cv.warpAffine(img,
+	                     cv.getRotationMatrix2D(center, skew_angle, 1.0),
+	                     (w, h),
+	                     flags=cv.INTER_CUBIC,
+	                     borderMode=cv.BORDER_REPLICATE)
 
 
 #todo
-def deskew_and_crop(img, skew_angle):
-	pass
+def crop(img):
+	return img
 
 
-def main(image_filename):
-	img = open_image(image_filename)
+def main(input_filename, output_filename):
+	img = open_image(input_filename)
 	gray = None
 	if img is None:
-		err(f"{image_filename} not found or can not be processed")
+		err(f"'{input_filename}' not found or can not be processed")
 		return
 	if len(img.shape) == 3 and img.shape[2] != 1:
-		gray = cv.cvtColor(img,  cv.COLOR_BGR2GRAY)
+		gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
 	else:
 		gray = np.copy(img)
 	img_type = classify_image_type(gray)
@@ -134,14 +155,28 @@ def main(image_filename):
 			threshold = K3
 	binarized_img = binarize(gray, threshold)
 	skew_angle = estimate_skew_angle(binarized_img)
-	deskewed_img = deskew_and_crop(img, gray, skew_angle)
-	save_image("_deskewed.".join(image_filename.split(".")), deskewed_img)
+	deskewed_img = deskew(img, skew_angle)
+	cropped_img = crop(deskewed_img)
+	save_image(output_filename, cropped_img)
+	dbg("Done")
 
 
-if __name__ == "__main_":
+def init():
 	logging.basicConfig(level=LOGGING_LEVEL,
 	                    format="[%(levelname)s] %(message)s")
-	if len(sys.argv) < 2:
-		err("No file input")
-		sys.exit()
-	main(sys.argv[1])
+
+
+if __name__ == "__main__":
+	init()
+	ap = argparse.ArgumentParser(
+	    description="Adaptive cropping and deskewing of scanned documents " +
+	    "based on high accuracy estimation of skew angle and cropping value")
+	ap.add_argument("-i", "--input", required=True, help="Input image file")
+	ap.add_argument("-o", "--output", required=False, help="Output image file")
+	args = ap.parse_args()
+	root, ext = os.path.splitext(args.input)
+	if args.output is None or args.output.strip() == '':
+		args.output = root + "_deskewed" + ext
+	if '.' not in args.output:
+		args.output = f"{args.output}{ext}"
+	main(args.input, args.output)
