@@ -7,15 +7,15 @@ try:
 	import cv2 as cv
 	import numpy as np
 except:
-	print("Could not import dependencies." +
+	print("Could not import dependencies. " +
 	      "Make sure you have them installed")
 	print("Either do -")
-	print("python -m pip install --user numpy opencv-contrib-python")
-	print(f"python {' '.join(sys.argv)}")
+	print(">python -m pip install --user numpy opencv-contrib-python")
+	print(f">python {' '.join(sys.argv)}")
 	print("OR")
-	print("python -m pip install poetry")
-	print("poetry install")
-	print(f"poetry run python {' '.join(sys.argv)}")
+	print(">python -m pip install poetry")
+	print(">poetry install")
+	print(f">poetry run python {' '.join(sys.argv)}")
 	sys.exit()
 
 dbg = logging.debug
@@ -118,12 +118,18 @@ def estimate_skew_angle(img):
 def deskew(img, skew_angle):
 	(h, w) = img.shape[:2]
 	# Maybe it would be better to get centroid of page instead of image center
-	center = (w // 2, h // 2)
-	return cv.warpAffine(img,
-	                     cv.getRotationMatrix2D(center, skew_angle, 1.0),
-	                     (w, h),
-	                     flags=cv.INTER_CUBIC,
-	                     borderMode=cv.BORDER_REPLICATE)
+	(cX, cY) = (w / 2, h / 2)
+
+	M = cv.getRotationMatrix2D((cX, cY), skew_angle, 1.0)
+	cos = np.abs(M[0, 0])
+	sin = np.abs(M[0, 1])
+
+	nW = int((h * sin) + (w * cos))
+	nH = int((h * cos) + (w * sin))
+	M[0, 2] += (nW / 2) - cX
+	M[1, 2] += (nH / 2) - cY
+
+	return cv.warpAffine(img, M, (nW, nH), borderMode=cv.BORDER_REPLICATE)
 
 
 #todo
