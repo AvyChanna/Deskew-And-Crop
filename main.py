@@ -101,9 +101,26 @@ def classify_image_type(img):
 	return ImageType.NON_TEXT
 
 
-# todo
+# done probably
 def classify_edge_type(img):
-	return EdgeType.BLACK
+	rows, cols = img.shape[:2]
+	dbg(f"Using Step length of {STEP_LENGTH} pixels")
+	for i in range(0, rows, STEP_LENGTH):
+		b,g,r=0,0,0
+		pixelL=img[i][0]
+		pixelR=img[i][cols-1]
+		if B0 <= pixelL <= B1 and B0 <= pixelR <= B1:
+			b += 1
+		elif G0 <= pixelL <= G1 and G0 <= pixelR <= G1:
+			g += 1
+		else:
+			r += 1
+	if b > max(g,r):
+		return EdgeType.BLACK
+	elif g > max(b,r):
+		return EdgeType.GRAY
+	else:
+		return EdgeType.NON_EDGE		
 
 
 def binarize(img, threshold):
