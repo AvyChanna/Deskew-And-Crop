@@ -127,9 +127,26 @@ def binarize(img, threshold):
 	return cv.threshold(img, threshold, 255, cv.THRESH_BINARY)
 
 
-#todo
+#estimate skew angle and return most apropriate skew angle
 def estimate_skew_angle(img):
-	return 10
+	# grab the (x, y) coordinates of all pixel values that
+	# are greater than zero, then use these coordinates to
+	# compute a rotated bounding box that contains all
+	# coordinates
+	coords = np.column_stack(np.where(img > 0))
+	angle = cv.minAreaRect(coords)[-1]
+	# the `cv.minAreaRect` function returns values in the
+	# range [-90, 0); as the rectangle rotates clockwise the
+	# returned angle trends to 0 -- in this special case we
+	# need to add 90 degrees to the angle
+	if angle < -45:
+		angle = -(90 + angle)
+	# otherwise, just take the inverse of the angle to make
+	# it positive
+	else:
+		angle = -angle
+	return angle
+
 
 
 def deskew(img, skew_angle):
