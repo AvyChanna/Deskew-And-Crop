@@ -7,15 +7,8 @@ try:
 	import cv2 as cv
 	import numpy as np
 except:
-	print("Could not import dependencies. " +
-	      "Make sure you have them installed")
-	print("Either do -")
-	print(">python -m pip install --user numpy opencv-contrib-python")
-	print(f">python {' '.join(sys.argv)}")
-	print("OR")
-	print(">python -m pip install poetry")
-	print(">poetry install")
-	print(f">poetry run python {' '.join(sys.argv)}")
+	print("Could not import dependencies. Make sure you have them installed")
+	print(">python -m pip install --user -r requirements.txt")
 	sys.exit()
 
 dbg = logging.debug
@@ -25,12 +18,6 @@ warn = logging.warning
 ########## CONFIG ##########
 # Minimum dimensions allowed for the image
 MIN_DIMENSIONS = 20, 20
-
-# Logging level. Can be one of -
-# logging.DEBUG=Verbose
-# logging.WARNING=Important
-# logging.ERROR=Errors
-LOGGING_LEVEL = logging.DEBUG
 
 # Step Length for image traversal
 STEP_LENGTH = 10
@@ -46,6 +33,9 @@ K1, K2, K3 = 50, 178, 229
 
 # Intensity thresholds for black, gray and white pixels
 B0, B1, G0, G1, W0, W1 = 0, 0, 0, 0, 0, 0
+
+# Cropping Threshold for Watershed
+CROP_THRESH = 10
 ########## END CONFIG ##########
 
 
@@ -92,8 +82,7 @@ def classify_image_type(img):
 				gray_acc += 1
 			elif W0 <= pixel <= W1:
 				white_acc += 1
-		if white_acc != 0 and (black_acc +
-		                       gray_acc) / white_acc >= BLACK_TO_WHITE_RATIO:
+		if white_acc != 0 and (black_acc + gray_acc) / white_acc >= BLACK_TO_WHITE_RATIO:
 			text_lines += 1
 	dbg(f"Found {text_lines} text rows out of {total_lines} traversal rows")
 	if text_lines / total_lines >= TEXT_TO_ROWS_RATIO:
@@ -101,26 +90,26 @@ def classify_image_type(img):
 	return ImageType.NON_TEXT
 
 
-# done probably
 def classify_edge_type(img):
 	rows, cols = img.shape[:2]
 	dbg(f"Using Step length of {STEP_LENGTH} pixels")
+	b, g, r = 0, 0, 0
 	for i in range(0, rows, STEP_LENGTH):
-		b,g,r=0,0,0
-		pixelL=img[i][0]
-		pixelR=img[i][cols-1]
+		b, g, r = 0, 0, 0
+		pixelL = img[i][0]
+		pixelR = img[i][cols - 1]
 		if B0 <= pixelL <= B1 and B0 <= pixelR <= B1:
 			b += 1
 		elif G0 <= pixelL <= G1 and G0 <= pixelR <= G1:
 			g += 1
 		else:
 			r += 1
-	if b > max(g,r):
+	if b > max(g, r):
 		return EdgeType.BLACK
-	elif g > max(b,r):
+	elif g > max(b, r):
 		return EdgeType.GRAY
 	else:
-		return EdgeType.NON_EDGE		
+		return EdgeType.NON_EDGE
 
 
 def binarize(img, threshold):
@@ -149,9 +138,100 @@ def deskew(img, skew_angle):
 	return cv.warpAffine(img, M, (nW, nH), borderMode=cv.BORDER_REPLICATE)
 
 
-#todo
+def order_rect(points):
+	res = np.zeros((4, 2), dtype=np.float32)
+	s = np.sum(points, axis=1)
+	d = np.diff(points, axis=1)
+	res[0] = points[np.argmin(s)]
+	res[1] = points[np.argmin(d)]
+	res[2] = points[np.argmax(s)]
+	res[3] = points[np.argmax(d)]
+	return res
+
+
+def trans(img, points):
+	rect = order_rect(points)
+	(tl, tr, br, bl) = rect
+	widthA = np.sqrt(((br[0] - bl[0])**2) + ((br[1] - bl[1])**2))
+	widthB = np.sqrt(((tr[0] - tl[0])**2) + ((tr[1] - tl[1])**2))
+	maxWidth = max(int(widthA), int(widthB))
+	heightA = np.sqrt(((tr[0] - br[0])**2) + ((tr[1] - br[1])**2))
+	heightB = np.sqrt(((tl[0] - bl[0])**2) + ((tl[1] - bl[1])**2))
+	maxHeight = max(int(heightA), int(heightB))
+	dst = np.array([[0, 0], [maxWidth - 1, 0], [maxWidth - 1, maxHeight - 1], [0, maxHeight - 1]], dtype=np.float32)
+	M = cv.getPerspectiveTransform(rect, dst)
+	warped = cv.warpPerspective(img, M, (maxWidth, maxHeight))
+	return warped
+
+
+def crop_impl(img, gray, thresh):
+	found = False
+	loop = False
+	old_val = 0
+	i = 0
+
+	im_h, im_w = img.shape[:2]
+	while not found:
+		if thresh >= 255 or thresh == 0 or loop:
+			break
+
+		ret, thresh = cv.threshold(gray, thresh, 255, cv.THRESH_BINARY)
+		contours = cv.findContours(thresh, cv.RETR_LIST, cv.CHAIN_APPROX_NONE)[0]
+		im_area = im_w * im_h
+
+		for cnt in contours:
+			area = cv.contourArea(cnt)
+			if area > (im_area / 100) and area < (im_area / 1.01):
+				epsilon = 0.1 * cv.arcLength(cnt, True)
+				approx = cv.approxPolyDP(cnt, epsilon, True)
+
+				if len(approx) == 4:
+					found = True
+				elif len(approx) > 4:
+					thresh = thresh - 1
+					dbg(f"Adjust Threshold: {thresh}")
+					if thresh == old_val + 1:
+						loop = True
+					break
+				elif len(approx) < 4:
+					thresh = thresh + 5
+					dbg(f"Adjust Threshold: {thresh}")
+					if thresh == old_val - 5:
+						loop = True
+					break
+
+				rect = np.zeros((4, 2), dtype=np.float32)
+				rect[0] = approx[0]
+				rect[1] = approx[1]
+				rect[2] = approx[2]
+				rect[3] = approx[3]
+
+				dst = trans(img, rect)
+				dst_h, dst_w = dst.shape[:2]
+				img = dst[0:dst_h, 0:dst_w]
+			else:
+				if i > 100:
+					thresh = thresh + 5
+					if thresh > 255:
+						break
+					dbg(f"Adjust Threshold: {thresh}")
+					if thresh == old_val - 5:
+						loop = True
+
+	return found, img
+
+
 def crop(img):
-	return img
+	old_img = img.copy()
+	img = cv.copyMakeBorder(img, 100, 100, 100, 100, cv.BORDER_CONSTANT, value=[255, 255, 255])
+	gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+	found, img = crop_impl(img, gray, CROP_THRESH)
+	if found:
+		dbg("Successfully cropped image")
+		return img
+	else:
+		dbg("Image seems to be already cropped")
+		return old_img
 
 
 def main(input_filename, output_filename):
@@ -184,19 +264,19 @@ def main(input_filename, output_filename):
 	dbg("Done")
 
 
-def init():
-	logging.basicConfig(level=LOGGING_LEVEL,
-	                    format="[%(levelname)s] %(message)s")
+def init_logging(level):
+	logging.basicConfig(level=level, format="[%(levelname)s] %(message)s")
 
 
 if __name__ == "__main__":
-	init()
-	ap = argparse.ArgumentParser(
-	    description="Adaptive cropping and deskewing of scanned documents " +
-	    "based on high accuracy estimation of skew angle and cropping value")
+	ap = argparse.ArgumentParser(description="Adaptive cropping and deskewing of scanned documents " +
+	                             "based on high accuracy estimation of skew angle and cropping value")
 	ap.add_argument("-i", "--input", required=True, help="Input image file")
 	ap.add_argument("-o", "--output", required=False, help="Output image file")
+	ap.add_argument("-d", "--debug", action="store_const", const=logging.DEBUG, default=logging.WARNING)
 	args = ap.parse_args()
+	init_logging(args.debug)
+	dbg("a")
 	root, ext = os.path.splitext(args.input)
 	if args.output is None or args.output.strip() == '':
 		args.output = root + "_deskewed" + ext
