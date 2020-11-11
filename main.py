@@ -249,16 +249,15 @@ def show(img):
 	cv.destroyAllWindows()
 
 
-def main(input_filename, output_filename):
-	img = open_image(input_filename)
+# takes image matrix as input, returns processed image matrix as output
+def algo(img):
+	assert img is not None
 	gray = None
-	if img is None:
-		err(f"'{input_filename}' not found or can not be processed")
-		return
 	if len(img.shape) == 3 and img.shape[2] != 1:
 		gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
 	else:
 		gray = np.copy(img)
+		img = cv.cvtColor(gray, cv.COLOR_GRAY2BGR)
 	img_type = classify_image_type(gray)
 	dbg(f"Image classified as {img_type.name}")
 	threshold = K2
@@ -272,13 +271,19 @@ def main(input_filename, output_filename):
 		elif img_edge_type == EdgeType.NON_EDGE:
 			threshold = K3
 	binarized_img = binarize(gray, threshold)
-	show(binarized_img)
 	skew_angle = estimate_skew_angle(binarized_img)
 	dbg(f"Skew Angle = {skew_angle}")
 	deskewed_img = deskew(img, skew_angle)
-	show(deskewed_img)
 	cropped_img = crop(deskewed_img, threshold)
-	show(cropped_img)
+	return cropped_img
+
+
+def main(input_filename, output_filename):
+	img = open_image(input_filename)
+	if img is None:
+		err(f"'{input_filename}' not found or can not be processed")
+		return
+	cropped_img = algo(img)
 	save_image(output_filename, cropped_img)
 	dbg("Done")
 
