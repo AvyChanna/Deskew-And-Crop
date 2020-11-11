@@ -32,10 +32,7 @@ TEXT_TO_ROWS_RATIO = 0.4
 K1, K2, K3 = 50, 178, 229
 
 # Intensity thresholds for black, gray and white pixels
-B0, B1, G0, G1, W0, W1 = 0, 0, 0, 0, 0, 0
-
-# Cropping Threshold for Watershed
-CROP_THRESH = 10
+B0, B1, G0, G1, W0, W1 = 10, 60, 120, 190, 200, 250
 ########## END CONFIG ##########
 
 
@@ -82,7 +79,8 @@ def classify_image_type(img):
 				gray_acc += 1
 			elif W0 <= pixel <= W1:
 				white_acc += 1
-		if white_acc != 0 and (black_acc + gray_acc) / white_acc >= BLACK_TO_WHITE_RATIO:
+		if white_acc != 0 and (black_acc +
+		                       gray_acc) / white_acc >= BLACK_TO_WHITE_RATIO:
 			text_lines += 1
 	dbg(f"Found {text_lines} text rows out of {total_lines} traversal rows")
 	if text_lines / total_lines >= TEXT_TO_ROWS_RATIO:
@@ -113,12 +111,12 @@ def classify_edge_type(img):
 
 
 def binarize(img, threshold):
-	return cv.threshold(img, threshold, 255, cv.THRESH_BINARY)
+	return cv.threshold(img, threshold, 255, cv.THRESH_BINARY)[-1]
 
 
 #todo
 def estimate_skew_angle(img):
-	return 10
+	return 0
 
 
 def deskew(img, skew_angle):
@@ -158,13 +156,15 @@ def trans(img, points):
 	heightA = np.sqrt(((tr[0] - br[0])**2) + ((tr[1] - br[1])**2))
 	heightB = np.sqrt(((tl[0] - bl[0])**2) + ((tl[1] - bl[1])**2))
 	maxHeight = max(int(heightA), int(heightB))
-	dst = np.array([[0, 0], [maxWidth - 1, 0], [maxWidth - 1, maxHeight - 1], [0, maxHeight - 1]], dtype=np.float32)
+	dst = np.array([[0, 0], [maxWidth - 1, 0], [maxWidth - 1, maxHeight - 1],
+	                [0, maxHeight - 1]],
+	               dtype=np.float32)
 	M = cv.getPerspectiveTransform(rect, dst)
 	warped = cv.warpPerspective(img, M, (maxWidth, maxHeight))
 	return warped
 
 
-def crop_impl(img, gray, thresh):
+def crop_impl(img, gray, threshold):
 	found = False
 	loop = False
 	old_val = 0
@@ -172,11 +172,12 @@ def crop_impl(img, gray, thresh):
 
 	im_h, im_w = img.shape[:2]
 	while not found:
-		if thresh >= 255 or thresh == 0 or loop:
+		if threshold >= 255 or threshold == 0 or loop:
 			break
 
-		ret, thresh = cv.threshold(gray, thresh, 255, cv.THRESH_BINARY)
-		contours = cv.findContours(thresh, cv.RETR_LIST, cv.CHAIN_APPROX_NONE)[0]
+		_, thresh = cv.threshold(gray, threshold, 255, cv.THRESH_BINARY)
+		contours = cv.findContours(thresh, cv.RETR_LIST,
+		                           cv.CHAIN_APPROX_NONE)[0]
 		im_area = im_w * im_h
 
 		for cnt in contours:
@@ -184,19 +185,18 @@ def crop_impl(img, gray, thresh):
 			if area > (im_area / 100) and area < (im_area / 1.01):
 				epsilon = 0.1 * cv.arcLength(cnt, True)
 				approx = cv.approxPolyDP(cnt, epsilon, True)
-
 				if len(approx) == 4:
 					found = True
 				elif len(approx) > 4:
-					thresh = thresh - 1
-					dbg(f"Adjust Threshold: {thresh}")
-					if thresh == old_val + 1:
+					threshold = threshold - 1
+					dbg(f"Adjust Threshold: {threshold}")
+					if threshold == old_val + 1:
 						loop = True
 					break
 				elif len(approx) < 4:
-					thresh = thresh + 5
-					dbg(f"Adjust Threshold: {thresh}")
-					if thresh == old_val - 5:
+					threshold = threshold + 5
+					dbg(f"Adjust Threshold: {threshold}")
+					if threshold == old_val - 5:
 						loop = True
 					break
 
@@ -211,27 +211,42 @@ def crop_impl(img, gray, thresh):
 				img = dst[0:dst_h, 0:dst_w]
 			else:
 				if i > 100:
-					thresh = thresh + 5
-					if thresh > 255:
+					threshold = threshold + 5
+					if threshold > 255:
 						break
-					dbg(f"Adjust Threshold: {thresh}")
-					if thresh == old_val - 5:
+					dbg(f"Adjust Threshold: {threshold}")
+					if threshold == old_val - 5:
 						loop = True
 
 	return found, img
 
 
-def crop(img):
+def crop(img, threshold):
 	old_img = img.copy()
-	img = cv.copyMakeBorder(img, 100, 100, 100, 100, cv.BORDER_CONSTANT, value=[255, 255, 255])
+	img = cv.copyMakeBorder(
+	    img,
+	    100,
+	    100,
+	    100,
+	    100,
+	    # cv.BORDER_CONSTANT,
+	    cv.BORDER_REPLICATE,
+	    value=[255, 255, 255])
 	gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-	found, img = crop_impl(img, gray, CROP_THRESH)
+	found, img = crop_impl(img, gray, threshold)
 	if found:
 		dbg("Successfully cropped image")
 		return img
 	else:
 		dbg("Image seems to be already cropped")
 		return old_img
+
+
+def show(img):
+	cv.imshow("", img)
+	if cv.waitKey(0) & 0xFF == 'q':
+		sys.exit()
+	cv.destroyAllWindows()
 
 
 def main(input_filename, output_filename):
@@ -257,9 +272,13 @@ def main(input_filename, output_filename):
 		elif img_edge_type == EdgeType.NON_EDGE:
 			threshold = K3
 	binarized_img = binarize(gray, threshold)
+	show(binarized_img)
 	skew_angle = estimate_skew_angle(binarized_img)
+	dbg(f"Skew Angle = {skew_angle}")
 	deskewed_img = deskew(img, skew_angle)
-	cropped_img = crop(deskewed_img)
+	show(deskewed_img)
+	cropped_img = crop(deskewed_img, threshold)
+	show(cropped_img)
 	save_image(output_filename, cropped_img)
 	dbg("Done")
 
@@ -269,14 +288,18 @@ def init_logging(level):
 
 
 if __name__ == "__main__":
-	ap = argparse.ArgumentParser(description="Adaptive cropping and deskewing of scanned documents " +
-	                             "based on high accuracy estimation of skew angle and cropping value")
+	ap = argparse.ArgumentParser(
+	    description="Adaptive cropping and deskewing of scanned documents " +
+	    "based on high accuracy estimation of skew angle and cropping value")
 	ap.add_argument("-i", "--input", required=True, help="Input image file")
 	ap.add_argument("-o", "--output", required=False, help="Output image file")
-	ap.add_argument("-d", "--debug", action="store_const", const=logging.DEBUG, default=logging.WARNING)
+	ap.add_argument("-d",
+	                "--debug",
+	                action="store_const",
+	                const=logging.DEBUG,
+	                default=logging.WARNING)
 	args = ap.parse_args()
 	init_logging(args.debug)
-	dbg("a")
 	root, ext = os.path.splitext(args.input)
 	if args.output is None or args.output.strip() == '':
 		args.output = root + "_deskewed" + ext
